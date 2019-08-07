@@ -130,14 +130,30 @@ def get_support(model_data, initial_dist, eps = 10**(-6)):
         for r in range(0, R):
             new_combo = new_combos[r,:]
             initial_state_prob = initial_prob[branch.initial_state_id]
+            
             log_multinomial_pmf, poisson_pmf = get_probs(new_combo,
                                                          initial_dist_intensities[branch.initial_state_id,:],
                                                          dt,
                                                          branch.log_multinomial_pmf,
                                                          branch.poisson_pmf,
                                                          r)
+            
             poisson_compl_cdf = branch.poisson_compl_cdf - poisson_pmf
-            new_log_likelihood = np.log(initial_state_prob) + log_multinomial_pmf + np.log(poisson_compl_cdf)
+            
+#             if poisson_compl_cdf <= 0:
+#                 #rounding errors can lead to this
+#                 new_log_likelihood = -np.Inf
+#             else:
+#                 new_log_likelihood = np.log(initial_state_prob) + log_multinomial_pmf + np.log(poisson_compl_cdf)
+            lambda0 = np.sum(initial_dist_intensities[branch.initial_state_id,:] * dt)
+            y_sum = np.sum(new_combo)
+        
+            if y_sum > lambda0:   
+                log_chernoff_bound = y_sum - lambda0 - np.log(y_sum / lambda0) * y_sum
+            else:
+                log_chernoff_bound = 0.
+            
+            new_log_likelihood = np.log(initial_state_prob) + log_multinomial_pmf + log_chernoff_bound  
     
             if new_log_likelihood >= np.log(eps) and intensities[r] > 0:
                 #add branch to queue
@@ -167,7 +183,7 @@ def get_support(model_data, initial_dist, eps = 10**(-6)):
     return support, generator, initial_dist_array
     
 def get_probs(y, intensities, dt, parent_log_multinomial_pmf, parent_poisson_pmf, reaction_index):
-    lmbda0 = np.sum(intensities)
+    lmbda0 = np.T(intensities)
     
     if intensities[reaction_index] == 0:
         return -np.Inf, 0
