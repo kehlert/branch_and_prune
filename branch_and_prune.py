@@ -18,16 +18,14 @@ class ReactionComboBranch:
     intensity: float
     initial_state_id: int
     log_multinomial_pmf: float
-    poisson_pmf: float
-    poisson_compl_cdf: float
 
 @dataclass(order=True)
 class QueueItem:
     priority: float
     branch: Any=field(compare=False)
         
-    def __init__(self, likelihood, branch):
-        self.priority = -likelihood #lowest priority items are retrieved first
+    def __init__(self, neg_priority, branch):
+        self.priority = -neg_priority #lowest priority items are retrieved first
         self.branch = branch
         
 #initial_dist is a dict with keys=state tuples, vals=probabilities
@@ -81,7 +79,7 @@ def get_support(model_data, initial_dist, eps = 10**(-6)):
         lmbda0 = np.sum(euler_intensities)
 
         R = model.S.shape[1]
-        branch = ReactionComboBranch((np.zeros(R)), -1, -1, i, 0., np.exp(-lmbda0 * dt), 1.)
+        branch = ReactionComboBranch((np.zeros(R)), -1, -1, i, 0.)
         branch_queue.put(QueueItem(np.log(prob), branch)) #the minus sign is so highest are removed first   
     
     while not branch_queue.empty():
@@ -129,42 +127,22 @@ def get_support(model_data, initial_dist, eps = 10**(-6)):
 
         for r in range(0, R):
             new_combo = new_combos[r,:]
-            initial_state_prob = initial_prob[branch.initial_state_id]
             
-            log_multinomial_pmf, poisson_pmf = get_probs(new_combo,
-                                                         initial_dist_intensities[branch.initial_state_id,:],
-                                                         dt,
-                                                         branch.log_multinomial_pmf,
-                                                         branch.poisson_pmf,
-                                                         r)
-            
-            poisson_compl_cdf = branch.poisson_compl_cdf - poisson_pmf
-            
-#             if poisson_compl_cdf <= 0:
-#                 #rounding errors can lead to this
-#                 new_log_likelihood = -np.Inf
-#             else:
-#                 new_log_likelihood = np.log(initial_state_prob) + log_multinomial_pmf + np.log(poisson_compl_cdf)
-            lambda0 = np.sum(initial_dist_intensities[branch.initial_state_id,:] * dt)
-            y_sum = np.sum(new_combo)
-        
-            if y_sum > lambda0:   
-                log_chernoff_bound = y_sum - lambda0 - np.log(y_sum / lambda0) * y_sum
-            else:
-                log_chernoff_bound = 0.
-            
-            new_log_likelihood = np.log(initial_state_prob) + log_multinomial_pmf + log_chernoff_bound  
+            log_prob_bound, log_multinomial_pmf = get_log_prob_bound(new_combo,
+                                                                     initial_dist_intensities[branch.initial_state_id,:],
+                                                                     dt,
+                                                                     branch.log_multinomial_pmf,
+                                                                     r,
+                                                                     initial_prob[branch.initial_state_id])
     
-            if new_log_likelihood >= np.log(eps) and intensities[r] > 0:
+            if log_prob_bound >= np.log(eps) and intensities[r] > 0:
                 #add branch to queue
                 new_branch = ReactionComboBranch(new_combo,
                                                  state_index,
                                                  intensities[r],
                                                  branch.initial_state_id,
-                                                 log_multinomial_pmf,
-                                                 poisson_pmf,
-                                                 poisson_compl_cdf)
-                branch_queue.put(QueueItem(new_log_likelihood, new_branch))
+                                                 log_multinomial_pmf)
+                branch_queue.put(QueueItem(log_prob_bound, new_branch))
             else:
                 #prune
                 entries.append(intensities[r])
@@ -182,20 +160,25 @@ def get_support(model_data, initial_dist, eps = 10**(-6)):
     
     return support, generator, initial_dist_array
     
-def get_probs(y, intensities, dt, parent_log_multinomial_pmf, parent_poisson_pmf, reaction_index):
-    lmbda0 = np.T(intensities)
+def get_log_prob_bound(y, intensities, dt, parent_log_multinomial_pmf, reaction_index, initial_state_prob):
+    lambda0 = np.sum(intensities)
+    y_sum = np.sum(y)
     
     if intensities[reaction_index] == 0:
         return -np.Inf, 0
     
     log_multinomial_pmf = parent_log_multinomial_pmf\
-                          + np.log(intensities[reaction_index] / lmbda0)\
+                          + np.log(intensities[reaction_index] / lambda0)\
                           - np.log(y[reaction_index])\
-                          + np.log(np.sum(y))
+                          + np.log(y_sum)
 
-    if np.sum(y) > 1.:
-        poisson_pmf = parent_poisson_pmf * lmbda0 * dt / (np.sum(y)-1)
+    lambda0_dt = lambda0 * dt
+    
+    if y_sum > lambda0_dt:   
+        log_chernoff_bound = y_sum - lambda0_dt - np.log(y_sum / lambda0_dt) * y_sum
     else:
-        poisson_pmf = parent_poisson_pmf
+        log_chernoff_bound = 0.
 
-    return log_multinomial_pmf, poisson_pmf
+    log_prob_bound = np.log(initial_state_prob) + log_multinomial_pmf + log_chernoff_bound  
+
+    return log_prob_bound, log_multinomial_pmf
